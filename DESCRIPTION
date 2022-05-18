@@ -19,3 +19,5 @@ Imports:
     RSQLite,
     tibble,
     tidyr
+URL: https://github.com/BradyAJohnston/thermo
+BugReports: https://github.com/BradyAJohnston/thermo/issues
