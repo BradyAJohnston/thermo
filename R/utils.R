@@ -51,5 +51,7 @@ extract_table <- function(file, table) {
   df <- RSQLite::dbReadTable(con, name = table) |>
     tibble::as_tibble()
 
+  RSQLite::dbDisconnect(con)
+
   df
 }

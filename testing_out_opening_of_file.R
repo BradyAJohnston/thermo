@@ -1,178 +1,168 @@
-library(RSQLite)
 library(tidyverse)
 
-fl <- "~/Dropbox/BondLab/Data/MST data/Brady/13rna_com_exp/20200201/20200201_CompBind_assay.moc"
+# fl <-
+#   "~/Dropbox/BondLab/Data/MST data/Brady/13rna_com_exp/20200201/20200201_CompBind_assay.moc"
+#
+fl <- "~/Dropbox/BondLab/Data/MST data/Brady/Paper Bindg/PPRatph.moc"
 
-con <- dbConnect(RSQLite::SQLite(), fl)
+tables_to_extract <- c("mCapScan",
+                       "mMst",
+                       "Annotation",
+                       "tCapillary",
+                       "tContainer")
 
-
-df <- dbReadTable(con, name = "mCapScan") |>
-  as_tibble() |>
-  # select(ID, CapScanTrace) |>
-  filter(!is.na(CapScanTrace))
-
-
-
-
-blob_extract_1d <- function(blob, type = "double") {
-  numbers <- packBits(rawToBits(unlist(blob)), type = type)
-  df <- data.frame(
-    x = numbers
-  )
-
-  return(df)
+test <- function(x, fl) {
+  thermo::extract_table(fl, x) |>
+    janitor::clean_names()
 }
 
-blob_extract_2d <- function(blob, type = "double") {
-  numbers <- packBits(rawToBits(unlist(blob)), type = type)
+tables <- tables_to_extract |>
+  purrr::set_names() |>
+  purrr::map2(.y = fl, purrr::possibly(test, NA))
 
-  df <- data.frame(
-    x = numbers[seq(1, length(numbers), by = 2)],
-    y = numbers[seq(2, length(numbers), by = 2)]
+mst_values <- tables$mMst |>
+  dplyr::group_by(id) |>
+  dplyr::mutate(
+    trace_mst = purrr::map(mst_trace, purrr::possibly(blob_extract_1d, NA)),
+    step_times = list(
+      c(
+        nominal_duration_of_phase1,
+        nominal_duration_of_phase2,
+        nominal_duration_of_phase3
+      )
+    ),
+    trace_mst = purrr::map2(trace_mst, step_times, purrr::possibly(function(x, y) {
+      df <- tibble(fnorm = x / x[1],
+                   time = seq_along(x) - 1)
+      df |>
+        dplyr::mutate(time = (time) / max(time) * sum(y) - 0.5)
+    }, NA))
+  ) |>
+  dplyr::select(id, container, trace_mst, step_times)
+
+capillary_values <- tables$tCapillary |>
+  dplyr::select(id,
+                annotations,
+                index_on_parent_container,
+                container_type,
+                parent_container) |>
+  dplyr::rename(id_capillary = id,
+                cap = index_on_parent_container,
+                cap_type = container_type) |>
+  dplyr::mutate(cap = cap + 1) |>
+  tidyr::separate_rows(annotations, sep = ";")
+
+annotation_values <- tables$Annotation |>
+  dplyr::select(id,
+                caption,
+                annotation_role,
+                annotation_type,
+                numeric_value,
+                text_value)
+
+tables$Annotation |>
   )
+pull(tag) |>
+  unique()
 
-  return(df)
+ext_values <- function(x) {
+  start <- x |>
+    dplyr::filter(time < 5 & time > 3) |>
+    dplyr::pull(fnorm) |>
+    mean()
+
+  end <- x |>
+    dplyr::filter(time > 20 & time < 22) |>
+    dplyr::pull(fnorm) |>
+    mean()
+
+  diff <- end / start
+
+  diff
 }
 
 
-
-
+df <- mst_values |>
+  dplyr::left_join(capillary_values, by = c('container' = 'id_capillary')) |>
+  dplyr::left_join(annotation_values, by = c('annotations' = 'id'))
 
 df |>
-  mutate(
-    trace = map(CapScanTrace, blob_extract_2d)
+  filter(
+    annotation_type != "text"
   ) |>
-  unnest(trace) |>
-  ggplot(aes(x, y)) +
-  geom_line(aes(group = CenterPosition))
+  select(id, cap, caption, annotation_role, numeric_value) |>
 
-dbReadTable(con, name = "mMST") |>
-  as_tibble() |>
-  select(ID, MstTrace) |>
-  filter(!is.na(MstTrace)) |>
-  mutate(
-    trace = map(MstTrace, blob_extract_1d)
+  pivot_wider(
+    names_from = annotation_role,
+    values_from = c(caption, numeric_value)
   ) |>
-  select(ID, trace) |>
-  unnest(trace) |>
-  group_by(ID) |>
-  mutate(int = row_number()) |>
-  mutate(trace = x / x[1]) |>
-  ggplot(aes(int, trace)) +
-  geom_line(aes(group = ID))
-
-
-
-fl <- "~/Dropbox/BondLab/Data/MST data/Brady/13rna_com_exp/20200201/20200201_CompBind_assay.moc"
-
-con <- dbConnect(RSQLite::SQLite(), fl)
-
-df_mst <- dbReadTable(con, name = "mMST") |>
-  as_tibble() |>
-  # select(ID, MstTrace) |>
-  filter(!is.na(MstTrace)) |>
+  rename(
+    ligand = caption_ligand,
+    target = caption_target,
+    conc_ligand = numeric_value_ligand,
+    conc_target = numeric_value_target
+  )
+pivot_wider(
+  names_from = annotation_role,
+  values_from = caption,
+) |>
   mutate(
-    trace = map(MstTrace, ~packBits(rawToBits(unlist(.x)), type = "double"))
+    type = if_else(
+      is.na(ligand),
+      "target",
+      "ligand"
+    )
+  ) |>
+  pivot_wider(
+    names_from = type,
+    values_from = numeric_value,
+    names_prefix = "conc_",
+    names_repair = "unique"
+  ) |>
+  fill(ligand, target, conc_ligand, conc_target, .direction = c("downup")) |>
+  unique()
+
+pivot_wider(id_cols = c(id, container, trace_mst, cap, caption),
+            names_from = c(annotation_role),
+            values_from = numeric_value)
+tidyr::pivot
+
+values <- df |>
+  dplyr::filter(!is.na(map(trace_mst, `[[`, 1))) |>
+  dplyr::filter(annotation_type != "text") |>
+  pivot_wider(
+    names_from = annotation_role,
+    values_from = c(caption, numeric_value, text_value, annotations)
+  ) |>
+  rename(
+    ligand = caption_ligand,
+    target = caption_target,
+    conc_ligand = numeric_value_ligand,
+    conc_target = numeric_value_target
+  ) |>
+  dplyr::select(
+    id,
+    container,
+    trace_mst,
+    annotation_type,
+
+    parent_container,
+    target,
+    ligand,
+    conc_ligand,
+    conc_target
+  ) |>
+  # dplyr::filter(annotation_role == "ligand") |>
+  group_by(id) |>
+  dplyr::mutate(
+    diff = purrr::map_dbl(trace_mst, purrr::possibly(ext_values, NA))
   )
 
-df_mst <- df_mst |>
-  group_by(ID) |>
-  mutate(
-    time_sum = list(c(NominalDurationOfPhase1, NominalDurationOfPhase2, NominalDurationOfPhase3))
-  ) |>
-  # select(ID, time_sum) |
-  ungroup() |>
-
-  mutate(trace = map2(trace, time_sum, function(x, y) {
-    df <- tibble(
-      fnorm = x / x[1],
-      time = seq_along(x) - 1
-    )
-    df |>
-      mutate(time = (time) / max(time) * sum(y) - 0.5)
-  }))
-
-df_mst |>
-  select(ID, trace, NominalDurationOfPhase1) |>
-  unnest(trace) |>
-  ggplot(aes(time, fnorm)) +
-  geom_vline(aes(xintercept = NominalDurationOfPhase1)) +
-  geom_line(aes(group = ID), alpha = 0.05) +
-  # coord_cartesian(xlim = c(4, 6)) +
-  theme_light()
-
-
-df_analysis <- dbReadTable(con, name = "AffinityAnalysisMstTrace") |>
-  as_tibble() |>
-  select(ID, RawMst, ParentRun)
-df_analysis |>
-  left_join(df_mst |> select(ID, trace), by = c("RawMst" = "ID")) |>
-  unnest(trace) |>
-  ggplot(aes(time, fnorm, group = RawMst)) +
-  geom_line() +
-  facet_wrap(~ParentRun) +
-  theme_light()
-
-
-df_anno <- dbReadTable(con, name = "Annotation") |>
-  as_tibble()
-# select(ID, AnnotationRole, AnnotationType, Caption, NumericValue, TextValue) |>
-# left_join(df_analysis, by = c("ID" = "ID"))
-
-
-
-df_values <- dbReadTable(con, name = "tCapillary") |>
-  as_tibble() |>
-  select(ID, Annotations, Caption, ContainerType, ParentContainer) |>
-  separate_rows(
-    Annotations, sep = ";"
-  ) |>
-  left_join(df_anno, by = c("Annotations" = "ID"))
-
-
-df_values |>
-  select(
-    ID,
-    Annotations,
-    ParentContainer,
-    Caption.x,
-    AnnotationRole,
-    AnnotationType,
-    Caption.y,
-    NumericValue,
-    Tag,
-    TextValue
-  ) |>
-  left_join(df_mst, by = c("ParentContainer" = "Container"))
-
-dbReadTable(con, name = "tContainer") |>
-  as_tibble() |>
-
-  df_mst |>
-  select(ID, Container, ExcitationPower, MstPower, trace, time_sum) |>
-  left_join(df_values, by = )
-df_mst |> select(matches("Table"))
-dbReadTable(con, "ExpertModeCapillarySettings") |>
-  as_tibble()
-
-dbReadTable(con, name = "tCapillary") |>
-  as_tibble() |>
-  select(ID, Annotations, ParentContainer) |>
-  left_join(dbReadTable(con, name = "tContainer") |>
-              as_tibble(),
-            by = c("ParentContainer" = "ID")) |>
-  left_join(df_values, by = c("ParentContainer" = "ParentContainer")) |>
-  select(ID.x, ID.y, ParentContainer, NumericValue) |>
-  left_join(df_mst, by = c("ParentContainer" = "Container")) |>
-  drop_na()
-
-df_mst |>
-  select(ID, Container, trace, time_sum) |>
-  left_join(df_values, by = c("Container" = "ID")) |>
-  unnest(trace) |>
-  filter(AnnotationRole == "ligand") |>
-  ggplot(aes(time, fnorm, gorup = interaction(ParentContainer, Caption.x))) +
-  geom_line(alpha = 0.6, mapping = aes(colour = log10(NumericValue))) +
-  facet_wrap(~Caption.y~ParentContainer) +
-  scale_colour_viridis_c() +
-  theme_light()
+values |>
+  mutate(group = interaction(target)) |>
+  group_by(group) |>
+  biochemr::bio_binding(conc_ligand, diff) |>
+  biochemr::bio_plot() +
+  ggplot2::scale_x_log10() +
+  labs(x = "[RNA] nm",
+       y = "Fnorm")
