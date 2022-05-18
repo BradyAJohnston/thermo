@@ -1,0 +1,21 @@
+Package: thermo
+Title: Parse and Analyse Microscale Thermophoresis Data
+Version: 0.0.0.9000
+Authors@R: 
+    person("Brady", "Johnston", , "brady.johnston@research.uwa.edu.au", 
+    role = c("aut", "cre"),
+    comment = c(ORCID = "0000-0001-6301-2269")
+    )
+Description: Enables data extraction from `.moc` files that are produced from 
+  NanoTeemper machines such as the Monolith.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.1.2
+Imports: 
+    dplyr,
+    ggplot2,
+    purrr,
+    RSQLite,
+    tibble,
+    tidyr
